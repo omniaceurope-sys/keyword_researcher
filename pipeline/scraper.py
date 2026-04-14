@@ -51,17 +51,20 @@ Rules:
 - IMPORTANT: Product pages often use creative, branded, or poetic product names. \
   Do NOT use these as keywords. Instead, identify what the product IS or DOES \
   and generate the functional search queries customers actually use.
-  Example: "ProGlow X3 Serum" → "anti-aging serum", "face serum vitamin C" — NOT "proglow x3"
-  Example: "Mountain Breeze Bundle" → "hiking gear set", "outdoor equipment bundle" — NOT "mountain breeze bundle"
-- Focus on what the customer is SEARCHING FOR: the product type, its use case, \
-  the problem it solves, and the outcome they want.
-- Include natural variations: different word orders, synonyms, action-oriented \
-  phrases (how to X, best X for Y), and feature-focused queries.
-- Prefer 2-4 word phrases over single words — they have higher purchase intent.
+  Example: "ProGlow X3 Serum" → "face serum", "anti-aging serum" — NOT "proglow x3"
+  Example: "Mountain Breeze Bundle" → "hiking gear", "outdoor equipment" — NOT "mountain breeze bundle"
+- KEYWORD LENGTH — this is the most important rule:
+  * At least HALF of your keywords must be 1-2 words (generic, high-volume terms).
+    Start with the single-word category itself, then add simple modifiers.
+    Examples: "t-shirts", "men t-shirts", "fitted t-shirt", "gym t-shirt"
+  * The rest may be 3 words maximum.
+  * NEVER generate keywords longer than 3 words.
+- Cover the full search funnel: single generic category word first, then \
+  2-word terms with one modifier, then 3-word terms with fit/material/use-case.
 - Do NOT include brand names, model names, prices, or promotional language.
 - Respond ONLY with a valid JSON array of strings. No markdown, no explanation.
-- Example output: ["wireless noise cancelling headphones", "over ear headphones \
-  for travel", "bluetooth headphones long battery"]
+- Example output: ["men t-shirts", "fitted t-shirt", "crew neck tee", \
+  "slim fit t-shirt", "gym t-shirt men", "cotton t-shirt men"]
 """
 
 
