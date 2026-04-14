@@ -64,15 +64,11 @@ def _fetch_batch(
     request.keyword_seed.keywords.extend(keywords)
 
     results = {}
-    try:
-        response = keyword_plan_idea_service.generate_keyword_ideas(request=request)
-        for idea in response:
-            kw = idea.text.lower().strip()
-            volume = idea.keyword_idea_metrics.avg_monthly_searches
-            results[kw] = int(volume) if volume else 0
-    except GoogleAdsException as exc:
-        print(f"[keyword_planner] API error: {exc}", file=sys.stderr)
-
+    response = keyword_plan_idea_service.generate_keyword_ideas(request=request)
+    for idea in response:
+        kw = idea.text.lower().strip()
+        volume = idea.keyword_idea_metrics.avg_monthly_searches
+        results[kw] = int(volume) if volume else 0
     return results
 
 

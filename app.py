@@ -155,6 +155,24 @@ st.markdown(
 tab1, tab2, tab3 = st.tabs(["Single URL", "Full Site Crawl", "CSV Upload"])
 
 
+# Common geo/language options shown in the UI
+_GEO_OPTIONS = {
+    "Slovenia (SI)": "2705",
+    "Croatia (HR)": "2191",
+    "Austria (AT)": "2040",
+    "Germany (DE)": "2276",
+    "United Kingdom (UK)": "2826",
+    "United States (US)": "2840",
+    "Global": "2840",  # broadest single-country proxy
+}
+_LANG_OPTIONS = {
+    "Slovenian": "1023",
+    "Croatian": "1038",
+    "German": "1001",
+    "English": "1000",
+}
+
+
 # ── TAB 1: Single URL ─────────────────────────────────────────────────────────────
 with tab1:
     col_url, col_btn = st.columns([4, 1])
@@ -167,6 +185,12 @@ with tab1:
         )
     with col_btn:
         run_single = st.button("Run", key="run_single_btn", type="primary", use_container_width=True)
+
+    col_geo, col_lang = st.columns(2)
+    with col_geo:
+        single_geo_label = st.selectbox("Market (geo)", list(_GEO_OPTIONS.keys()), key="single_geo")
+    with col_lang:
+        single_lang_label = st.selectbox("Language", list(_LANG_OPTIONS.keys()), key="single_lang")
 
     if run_single:
         if not single_url:
@@ -201,7 +225,19 @@ with tab1:
 
                 _log("Fetching search volumes from Google Ads …")
                 prog.progress(45)
-                volumes = get_search_volumes(candidates)
+                geo_id  = _GEO_OPTIONS[single_geo_label]
+                lang_id = _LANG_OPTIONS[single_lang_label]
+                try:
+                    volumes = get_search_volumes(candidates, geo_target_id=geo_id, language_id=lang_id)
+                except Exception as gads_exc:
+                    st.error(f"Google Ads API error: {gads_exc}")
+                    st.info(
+                        "Common causes:\n"
+                        "- Developer token not yet approved for Basic access (Test tokens return 0)\n"
+                        "- Wrong `GOOGLE_ADS_CUSTOMER_ID` or `LOGIN_CUSTOMER_ID`\n"
+                        "- Mismatched language/geo settings for the page's market"
+                    )
+                    st.stop()
 
                 kw_list = sorted(
                     [{"kw": kw, "volume": volumes.get(kw, 0)}
@@ -212,7 +248,12 @@ with tab1:
                 _log(f"{len(kw_list)} keywords with volume > {MIN_SEARCH_VOLUME}.")
 
                 if not kw_list:
-                    st.warning("No keywords with sufficient search volume.")
+                    st.warning(
+                        "No keywords with sufficient search volume (all returned 0).  \n"
+                        "If the page is in English, try setting language to English "
+                        "(ID `1000`) and geo to a larger market (e.g. US = `2840`, UK = `2826`).  \n"
+                        "Also check that your developer token has Basic access in Google Ads → Tools → API Center."
+                    )
                     st.stop()
 
                 _log("Writing Excel …")
@@ -260,6 +301,12 @@ with tab2:
         )
     with col_crawl:
         crawl_btn = st.button("Crawl", key="crawl_btn", use_container_width=True)
+
+    col_geo2, col_lang2 = st.columns(2)
+    with col_geo2:
+        site_geo_label = st.selectbox("Market (geo)", list(_GEO_OPTIONS.keys()), key="site_geo")
+    with col_lang2:
+        site_lang_label = st.selectbox("Language", list(_LANG_OPTIONS.keys()), key="site_lang")
 
     if crawl_btn:
         if not site_url:
@@ -356,7 +403,11 @@ with tab2:
 
                         prog2.progress(50)
                         _log2("Fetching search volumes …")
-                        volumes = get_search_volumes(all_candidates)
+                        volumes = get_search_volumes(
+                            all_candidates,
+                            geo_target_id=_GEO_OPTIONS[site_geo_label],
+                            language_id=_LANG_OPTIONS[site_lang_label],
+                        )
 
                         kw_volumes = {
                             kw: volumes.get(kw, 0)
@@ -422,6 +473,12 @@ with tab3:
         "One sheet per URL in the output."
     )
     uploaded = st.file_uploader("CSV file", type=["csv"], key="csv_upload")
+
+    col_geo3, col_lang3 = st.columns(2)
+    with col_geo3:
+        csv_geo_label = st.selectbox("Market (geo)", list(_GEO_OPTIONS.keys()), key="csv_geo")
+    with col_lang3:
+        csv_lang_label = st.selectbox("Language", list(_LANG_OPTIONS.keys()), key="csv_lang")
     run_csv_btn = st.button("Run", key="run_csv_btn", type="primary", disabled=not uploaded)
 
     if run_csv_btn and uploaded:
@@ -471,7 +528,11 @@ with tab3:
 
                 prog3.progress(50)
                 _log3("Fetching search volumes …")
-                volumes = get_search_volumes(all_candidates)
+                volumes = get_search_volumes(
+                    all_candidates,
+                    geo_target_id=_GEO_OPTIONS[csv_geo_label],
+                    language_id=_LANG_OPTIONS[csv_lang_label],
+                )
 
                 prog3.progress(85)
                 _log3("Building output …")
