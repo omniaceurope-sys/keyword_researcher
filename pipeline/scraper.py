@@ -1,20 +1,16 @@
-"""
-scraper.py — Extracts search keywords from ecommerce pages using Claude Sonnet.
-"""
+"""Extract candidate keywords from a product landing page using AI."""
+
 import json
-import logging
-import time
+import sys
 
 import anthropic
 import requests
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from config.settings import ANTHROPIC_API_KEY, CLAUDE_MODEL, KEYWORDS_PER_PAGE
+from config.settings import SCRAPER_TIMEOUT, ANTHROPIC_API_KEY, CLAUDE_MODEL, TOP_KEYWORDS_PER_URL
 
-logger = logging.getLogger(__name__)
-
-HEADERS = {
+_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -22,7 +18,26 @@ HEADERS = {
     )
 }
 
-KEYWORD_EXTRACTION_PROMPT = """\
+# Platform-specific CSS selectors for the main product content area.
+# Tried in order; first match with non-empty text wins.
+_PRODUCT_CONTENT_SELECTORS = [
+    ("div", "summary"),                                         # WooCommerce
+    ("div", "woocommerce-product-details__short-description"),  # WooCommerce short desc
+    ("div", "product__description"),                            # Shopify
+    ("div", "product-single__description"),                     # Shopify (legacy)
+    ("div", "product-description"),                             # Magento / generic
+    ("div", "pdp-description"),                                 # Various
+    ("div", "product-detail__description"),                     # Various
+    ("section", "product-description"),                         # Various
+    ("div", "product__info-container"),                         # Shopify Dawn theme
+    ("div", "product-info__description"),                       # Various
+]
+
+_NOISE_TAGS = ["script", "style", "nav", "footer", "header", "aside"]
+
+_claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+_SYSTEM_PROMPT = """\
 You are a Google Ads keyword research specialist.
 
 Your job is to generate search keywords that real customers type into Google \
@@ -47,198 +62,217 @@ Rules:
 - Respond ONLY with a valid JSON array of strings. No markdown, no explanation.
 - Example output: ["wireless noise cancelling headphones", "over ear headphones \
   for travel", "bluetooth headphones long battery"]
+"""
 
-Generate approximately {n} keywords.
 
-Page URL: {url}
-Page content:
-{content}"""
+def _parse_jsonld_product(soup: BeautifulSoup) -> dict | None:
+    """Parse schema.org Product JSON-LD and return a dict with all available fields."""
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            raw = script.string or ""
+            data = json.loads(raw)
+            candidates = data if isinstance(data, list) else [data]
+            expanded = []
+            for item in candidates:
+                if isinstance(item, dict):
+                    expanded.append(item)
+                    expanded.extend(item.get("@graph", []))
+
+            for item in expanded:
+                if not isinstance(item, dict):
+                    continue
+                type_ = item.get("@type", "")
+                if type_ == "Product" or (isinstance(type_, list) and "Product" in type_):
+                    brand = item.get("brand", {})
+                    brand_name = (
+                        brand.get("name") if isinstance(brand, dict)
+                        else str(brand) if brand else None
+                    )
+                    return {
+                        "name": item.get("name"),
+                        "brand": brand_name,
+                        "description": item.get("description"),
+                        "category": item.get("category"),
+                    }
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            continue
+    return None
+
+
+def _extract_from_jsonld(soup: BeautifulSoup) -> str | None:
+    """Extract product text content from schema.org JSON-LD."""
+    product = _parse_jsonld_product(soup)
+    if not product:
+        return None
+    parts = [v for k, v in product.items() if v and k != "brand"]
+    return " ".join(parts) if parts else None
+
+
+def _extract_brand_from_soup(soup: BeautifulSoup) -> str:
+    """Try to extract the site/brand name from meta tags and common HTML patterns."""
+    # og:site_name (most reliable non-schema source)
+    og = soup.find("meta", property="og:site_name")
+    if og and og.get("content", "").strip():
+        return og["content"].strip()
+
+    # Twitter site name
+    tw = soup.find("meta", attrs={"name": "twitter:site"})
+    if tw and tw.get("content", "").strip():
+        val = tw["content"].strip().lstrip("@")
+        if val:
+            return val
+
+    # application-name
+    app = soup.find("meta", attrs={"name": "application-name"})
+    if app and app.get("content", "").strip():
+        return app["content"].strip()
+
+    return ""
+
+
+def get_product_info(url: str) -> dict:
+    """Return {name, brand} for a product page.
+
+    Extraction priority:
+    1. schema.org JSON-LD Product (name + brand)
+    2. og:site_name / twitter:site / application-name meta tags (brand only)
+    3. Page <title> stripped of common suffixes (name only)
+    """
+    try:
+        html = _fetch(url)
+    except Exception:
+        return {"name": "", "brand": ""}
+
+    soup = BeautifulSoup(html, "lxml")
+    product = _parse_jsonld_product(soup)
+
+    if product:
+        brand = product.get("brand") or _extract_brand_from_soup(soup)
+        return {
+            "name": product.get("name") or "",
+            "brand": brand,
+        }
+
+    # No JSON-LD product — try meta tags for brand, page title for name
+    brand = _extract_brand_from_soup(soup)
+    title_tag = soup.find("title")
+    name = title_tag.get_text().strip() if title_tag else ""
+    # Strip common " | Brand" or " - Brand" suffixes from title
+    for sep in (" | ", " - ", " – ", " — "):
+        if sep in name:
+            name = name.split(sep)[0].strip()
+            break
+
+    return {"name": name, "brand": brand}
+
+
+def _extract_from_selectors(soup: BeautifulSoup) -> str | None:
+    """Try known platform-specific CSS selectors for the product content area."""
+    for tag, cls in _PRODUCT_CONTENT_SELECTORS:
+        el = soup.find(tag, class_=cls)
+        if el:
+            text = el.get_text(separator=" ").strip()
+            if len(text) > 50:
+                return text
+    return None
+
+
+def _extract_from_main(soup: BeautifulSoup) -> str | None:
+    """Fallback: use the <main> tag, stripped of noise."""
+    main = soup.find("main")
+    if main:
+        for tag in main(_NOISE_TAGS):
+            tag.decompose()
+        return main.get_text(separator=" ")
+    return None
+
+
+def _get_page_text(html: str) -> str:
+    """Extract the most relevant product text from a page HTML."""
+    soup = BeautifulSoup(html, "lxml")
+
+    text = _extract_from_jsonld(soup)
+    if text:
+        return text
+
+    text = _extract_from_selectors(soup)
+    if text:
+        return text
+
+    text = _extract_from_main(soup)
+    if text:
+        return text
+
+    for tag in soup(_NOISE_TAGS):
+        tag.decompose()
+    return soup.get_text(separator=" ")
 
 
 @retry(
-    retry=retry_if_exception_type((requests.ConnectionError, requests.Timeout)),
+    retry=retry_if_exception_type(requests.RequestException),
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
     reraise=True,
 )
-def _fetch_html(url: str) -> str:
-    resp = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
+def _fetch(url: str) -> str:
+    resp = requests.get(url, headers=_HEADERS, timeout=SCRAPER_TIMEOUT)
     resp.raise_for_status()
     return resp.text
 
 
-def _extract_content(html: str, url: str) -> str:
-    """Extract meaningful text from HTML, stripping nav/footer/scripts."""
-    soup = BeautifulSoup(html, "lxml")
-
-    # Priority 1: JSON-LD structured data — extract BEFORE stripping scripts
-    json_ld_texts = []
-    for script in soup.find_all("script", type="application/ld+json"):
-        try:
-            data = json.loads(script.string or "")
-            if isinstance(data, list):
-                items = data
-            else:
-                items = [data]
-            for item in items:
-                _type = item.get("@type", "")
-                if _type in ("Product", "ItemList", "CollectionPage", "BreadcrumbList"):
-                    for field in ("name", "description", "alternateName"):
-                        val = item.get(field)
-                        if isinstance(val, str):
-                            json_ld_texts.append(val)
-                    items_list = item.get("itemListElement", [])
-                    for el in items_list:
-                        if isinstance(el, dict):
-                            for field in ("name", "description"):
-                                val = el.get(field, "")
-                                if isinstance(val, str):
-                                    json_ld_texts.append(val)
-        except (json.JSONDecodeError, AttributeError):
-            pass
-
-    if json_ld_texts:
-        return "\n".join(json_ld_texts)[:8000]
-
-    # Remove noise elements
-    for tag in soup(["script", "style", "noscript", "iframe",
-                     "nav", "footer", "header", "aside",
-                     "[class*='sidebar']", "[id*='sidebar']",
-                     "[class*='cookie']", "[class*='popup']",
-                     "[class*='newsletter']", "[class*='banner']"]):
-        tag.decompose()
-
-    # Also remove by common class/id patterns
-    for selector in [
-        ".sidebar", "#sidebar", ".widget", ".nav", ".navbar",
-        ".footer", "#footer", ".header", "#header",
-        ".breadcrumb", ".breadcrumbs",
-        ".pagination", ".pager",
-        ".social", ".share",
-        ".cookie", ".popup", ".modal",
-    ]:
-        for el in soup.select(selector):
-            el.decompose()
-
-    # Priority 2: Platform-specific selectors
-    platform_selectors = [
-        # WooCommerce
-        ".woocommerce-loop-product__title",
-        ".products .product",
-        ".product-title",
-        ".woocommerce-product-details__short-description",
-        # Shopify
-        ".collection-grid",
-        ".product-card",
-        ".grid__item",
-        ".card__heading",
-        # Generic ecommerce
-        ".product-list",
-        ".product-grid",
-        ".product-item",
-        ".product-name",
-        ".product-title",
-        "[class*='product']",
-        "[class*='collection']",
-        "[class*='category']",
-        "h1", "h2", "h3",
-    ]
-
-    parts = []
-    for sel in platform_selectors:
-        for el in soup.select(sel)[:20]:
-            text = el.get_text(separator=" ", strip=True)
-            if text:
-                parts.append(text)
-    if parts:
-        combined = "\n".join(parts)
-        if len(combined) > 500:
-            return combined[:8000]
-
-    # Priority 3: <main> fallback
-    main = soup.find("main")
-    if main:
-        return main.get_text(separator="\n", strip=True)[:8000]
-
-    return soup.get_text(separator="\n", strip=True)[:8000]
-
-
-def _call_claude(url: str, content: str, client: anthropic.Anthropic) -> list[str]:
-    """Call Claude Sonnet to generate keywords. Returns list of keyword strings."""
-    prompt = KEYWORD_EXTRACTION_PROMPT.format(
-        n=KEYWORDS_PER_PAGE,
-        url=url,
-        content=content,
-    )
-    message = client.messages.create(
+@retry(
+    retry=retry_if_exception_type(anthropic.APIError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=15),
+    reraise=True,
+)
+def _ask_claude(page_text: str, top_n: int, url: str = "") -> list[str]:
+    """Ask Claude to extract meaningful search keywords from the product text."""
+    message = _claude.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
+        max_tokens=512,
+        system=_SYSTEM_PROMPT,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"URL: {url}\n\n"
+                f"Extract up to {top_n} search keywords from this product page. "
+                f"Only include keywords relevant to the URL's main topic:\n\n"
+                f"{page_text[:3000]}"
+            ),
+        }],
     )
     raw = message.content[0].text.strip()
-
-    # Response is a JSON array of strings
-    try:
-        keywords = json.loads(raw)
-        if isinstance(keywords, list):
-            return [kw.strip() for kw in keywords if isinstance(kw, str) and kw.strip()]
-    except json.JSONDecodeError:
-        # Fallback: strip markdown fences and retry parse
-        cleaned = raw
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("```")[1]
-            if cleaned.startswith("json"):
-                cleaned = cleaned[4:]
-            cleaned = cleaned.strip()
-        try:
-            keywords = json.loads(cleaned)
-            if isinstance(keywords, list):
-                return [kw.strip() for kw in keywords if isinstance(kw, str) and kw.strip()]
-        except json.JSONDecodeError:
-            pass
-        # Last resort: treat each non-empty line as a keyword
-        return [line.strip().strip('"').strip("'").strip(",") for line in raw.splitlines() if line.strip()]
-
-    return []
+    # Strip markdown code fences if present
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+    return json.loads(raw)
 
 
-def scrape_keywords(url: str) -> list[str]:
+def extract_keywords(url: str, top_n: int = TOP_KEYWORDS_PER_URL) -> list[str]:
+    """Fetch a product page and use Claude to extract meaningful search keywords.
+
+    Returns an empty list on failure.
     """
-    Fetch the page at url, extract content, call Claude to generate keywords.
-    Returns a list of keyword strings (~KEYWORDS_PER_PAGE items).
-    On failure returns an empty list and logs a warning.
-    """
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    if not url:
+        return []
 
-    # Fetch HTML
     try:
-        html = _fetch_html(url)
+        html = _fetch(url)
     except Exception as exc:
-        logger.warning(f"Failed to fetch {url}: {exc}")
+        print(f"[scraper] failed to fetch {url}: {exc}", file=sys.stderr)
         return []
 
-    # Extract content
-    content = _extract_content(html, url)
-    if not content.strip():
-        logger.warning(f"No content extracted from {url}, skipping.")
+    page_text = _get_page_text(html)
+
+    try:
+        keywords = _ask_claude(page_text, top_n, url=url)
+        if not isinstance(keywords, list):
+            raise ValueError("Claude did not return a list")
+        return [str(kw).strip() for kw in keywords if kw]
+    except Exception as exc:
+        print(f"[scraper] Claude keyword extraction failed for {url}: {exc}", file=sys.stderr)
         return []
-
-    # Call Claude (retry once on API errors)
-    for attempt in range(2):
-        try:
-            keywords = _call_claude(url, content, client)
-            if keywords:
-                logger.info(f"Extracted {len(keywords)} keywords from {url}")
-                return keywords
-            else:
-                logger.warning(f"Claude returned no keywords for {url}")
-                return []
-        except anthropic.APIError as exc:
-            if attempt == 0:
-                logger.warning(f"Claude API error for {url} (attempt 1): {exc}. Retrying...")
-                time.sleep(2)
-            else:
-                logger.warning(f"Claude API error for {url} (attempt 2): {exc}. Skipping.")
-                return []
-
-    return []

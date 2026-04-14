@@ -2,20 +2,44 @@
 Keyword Researcher — Streamlit UI
 Run with: streamlit run app.py
 """
+
 import os
 import sys
-import threading
-import queue
-import logging
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
 import streamlit as st
+
+# ── Inject st.secrets into os.environ BEFORE any pipeline imports ───────────────
+# config/settings.py reads os.environ at import time, so credentials must be
+# present before any pipeline module is first imported.
+_SECRET_KEYS = [
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_ADS_DEVELOPER_TOKEN",
+    "GOOGLE_ADS_CLIENT_ID",
+    "GOOGLE_ADS_CLIENT_SECRET",
+    "GOOGLE_ADS_REFRESH_TOKEN",
+    "GOOGLE_ADS_LOGIN_CUSTOMER_ID",
+    "GOOGLE_ADS_CUSTOMER_ID",
+    "GOOGLE_ADS_USE_PROTO_PLUS",
+]
+
+try:
+    for _key in _SECRET_KEYS:
+        _val = st.secrets.get(_key)
+        if _val and not os.environ.get(_key):
+            os.environ[_key] = str(_val)
+except Exception:
+    pass  # No secrets file — rely on .env loaded below
+
 from dotenv import load_dotenv
+load_dotenv()
 
-load_dotenv()  # no-op on Streamlit Cloud, works locally
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# ── Page config ────────────────────────────────────────────────────────────────
+# ── Page config ──────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Keyword Researcher",
     page_icon="🔍",
@@ -23,69 +47,32 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS (dark theme matching screenshot) ─────────────────────────────────
 st.markdown("""
 <style>
-/* Sidebar status badges */
-.badge-ok {
-    background: #1a7a3a;
-    color: #fff;
-    padding: 6px 14px;
-    border-radius: 6px;
-    font-size: 0.85rem;
-    display: inline-block;
-    margin-bottom: 6px;
-    width: 100%;
-    text-align: center;
-}
-.badge-err {
-    background: #7a1a1a;
-    color: #fff;
-    padding: 6px 14px;
-    border-radius: 6px;
-    font-size: 0.85rem;
-    display: inline-block;
-    margin-bottom: 6px;
-    width: 100%;
-    text-align: center;
-}
-/* Tab underline tweak */
-[data-testid="stTabs"] button[aria-selected="true"] {
-    border-bottom: 2px solid #e05252;
-    color: #e05252;
-}
-/* Output table */
-.kw-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-.kw-table th { background: #1e3a5f; color: #fff; padding: 8px 12px; text-align: left; }
-.kw-table td { padding: 6px 12px; border-bottom: 1px solid #333; }
-.kw-table tr:nth-child(even) td { background: #1a1a2e; }
+.badge-ok  { background:#1a7a3a; color:#fff; padding:6px 14px; border-radius:6px;
+             font-size:.85rem; display:inline-block; margin-bottom:6px; width:100%; text-align:center; }
+.badge-err { background:#7a1a1a; color:#fff; padding:6px 14px; border-radius:6px;
+             font-size:.85rem; display:inline-block; margin-bottom:6px; width:100%; text-align:center; }
+.kw-table  { width:100%; border-collapse:collapse; font-size:.9rem; }
+.kw-table th { background:#1e3a5f; color:#fff; padding:8px 12px; text-align:left; }
+.kw-table td { padding:6px 12px; border-bottom:1px solid #333; }
+.kw-table tr:nth-child(even) td { background:#1a1a2e; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────────
-def _get_secret(key: str) -> str | None:
-    """Read from st.secrets first, then env vars (works on Cloud and locally)."""
-    try:
-        val = st.secrets.get(key)
-        if val:
-            return str(val)
-    except Exception:
-        pass
-    return os.getenv(key)
-
-
+# ── Helpers ──────────────────────────────────────────────────────────────────────
 def _check_env() -> dict[str, bool]:
-    checks = {
-        "Anthropic API key": bool(_get_secret("ANTHROPIC_API_KEY")),
-        "Google Ads developer token": bool(_get_secret("GOOGLE_ADS_DEVELOPER_TOKEN")),
-        "Google Ads client ID": bool(_get_secret("GOOGLE_ADS_CLIENT_ID")),
-        "Google Ads client secret": bool(_get_secret("GOOGLE_ADS_CLIENT_SECRET")),
-        "Google Ads refresh token": bool(_get_secret("GOOGLE_ADS_REFRESH_TOKEN")),
-        "Google Ads login customer ID": bool(_get_secret("GOOGLE_ADS_LOGIN_CUSTOMER_ID")),
-        "Google Ads customer ID": bool(_get_secret("GOOGLE_ADS_CUSTOMER_ID")),
+    keys = {
+        "Anthropic API key":          "ANTHROPIC_API_KEY",
+        "Google developer token":     "GOOGLE_ADS_DEVELOPER_TOKEN",
+        "Google client ID":           "GOOGLE_ADS_CLIENT_ID",
+        "Google client secret":       "GOOGLE_ADS_CLIENT_SECRET",
+        "Google refresh token":       "GOOGLE_ADS_REFRESH_TOKEN",
+        "Google login customer ID":   "GOOGLE_ADS_LOGIN_CUSTOMER_ID",
+        "Google customer ID":         "GOOGLE_ADS_CUSTOMER_ID",
     }
-    return checks
+    return {label: bool(os.environ.get(env_key)) for label, env_key in keys.items()}
 
 
 def _validate_url(url: str) -> bool:
@@ -100,6 +87,26 @@ def _domain(url: str) -> str:
     return urlparse(url).netloc
 
 
+def _output_path(url: str) -> str:
+    domain = _domain(url).replace(".", "_").replace("-", "_")
+    date   = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    path   = f"data/output/{domain}_{date}.xlsx"
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _kw_table_html(rows: list[tuple[str, int]]) -> str:
+    body = "".join(
+        f"<tr><td>{kw}</td><td>{vol:,}</td></tr>"
+        for kw, vol in rows
+    )
+    return (
+        '<table class="kw-table"><thead>'
+        "<tr><th>Keyword</th><th>Avg Monthly Volume</th></tr>"
+        f"</thead><tbody>{body}</tbody></table>"
+    )
+
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🔍 Keyword Researcher")
@@ -108,14 +115,12 @@ with st.sidebar:
 
     st.markdown("**Config status**")
     env = _check_env()
-    all_ok = all(env.values())
-
-    # Group into two badges: Anthropic + Google Ads
     anthropic_ok = env["Anthropic API key"]
-    google_ok = all(v for k, v in env.items() if k != "Anthropic API key")
+    google_ok    = all(v for k, v in env.items() if k != "Anthropic API key")
+    all_ok       = anthropic_ok and google_ok
 
     if anthropic_ok:
-        st.markdown('<div class="badge-ok">✓ Anthropic API key ready</div>', unsafe_allow_html=True)
+        st.markdown('<div class="badge-ok">✓ Anthropic API ready</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="badge-err">✗ Anthropic API key missing</div>', unsafe_allow_html=True)
 
@@ -126,392 +131,402 @@ with st.sidebar:
 
     if not all_ok:
         with st.expander("Missing variables"):
-            for k, ok in env.items():
+            for label, ok in env.items():
                 if not ok:
-                    st.markdown(f"- `{k.upper().replace(' ', '_')}`")
+                    st.markdown(f"- {label}")
 
     st.divider()
-
-    # Last run stats from session state
     if "last_run" in st.session_state:
         lr = st.session_state["last_run"]
-        st.markdown("**Last generated**")
-        st.markdown(f"**URL:** {lr.get('url', '—')}")
+        st.markdown("**Last run**")
+        st.markdown(f"**Site:** {lr.get('domain', '—')}")
         st.markdown(f"**Mode:** {lr.get('mode', '—')}")
-        st.markdown(f"**Candidate kws:** {lr.get('candidate_kws', 0)}")
-        st.markdown(f"**After filter:** {lr.get('filtered_kws', 0)}")
-        if lr.get("output_path"):
-            st.markdown(f"**Output:** `{os.path.basename(lr['output_path'])}`")
+        st.markdown(f"**Candidates:** {lr.get('candidates', 0)}")
+        st.markdown(f"**After filter:** {lr.get('filtered', 0)}")
 
 
-# ── Main content ─────────────────────────────────────────────────────────────────
-st.title("Generate Keywords")
-st.markdown("Enter a URL to research keywords. The tool will extract search queries, fetch real volumes from Google Ads, and export an Excel file.")
+# ── Main ─────────────────────────────────────────────────────────────────────────
+st.title("Keyword Researcher")
+st.markdown(
+    "Extract search keywords from ecommerce pages, fetch real Google Ads volumes, "
+    "and download a ready-to-use Excel workbook."
+)
 
-tab1, tab2, tab3 = st.tabs(["1 — Single URL", "2 — Full Site Crawl", "3 — CSV Upload"])
+tab1, tab2, tab3 = st.tabs(["Single URL", "Full Site Crawl", "CSV Upload"])
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-# TAB 1: Single URL
-# ────────────────────────────────────────────────────────────────────────────────
+# ── TAB 1: Single URL ─────────────────────────────────────────────────────────────
 with tab1:
-    col1, col2 = st.columns([3, 1])
-
-    with col1:
-        url_input = st.text_input(
+    col_url, col_btn = st.columns([4, 1])
+    with col_url:
+        single_url = st.text_input(
             "Page URL",
             placeholder="https://example.com/collections/headphones",
-            key="single_url",
+            key="single_url_input",
+            label_visibility="collapsed",
         )
-
-    with col2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        run_single = st.button("Run", key="run_single", type="primary", use_container_width=True)
+    with col_btn:
+        run_single = st.button("Run", key="run_single_btn", type="primary", use_container_width=True)
 
     if run_single:
-        if not url_input:
-            st.error("Please enter a URL.")
-        elif not _validate_url(url_input):
-            st.error("Invalid URL. Must start with http:// or https://")
+        if not single_url:
+            st.error("Enter a URL.")
+        elif not _validate_url(single_url):
+            st.error("Invalid URL — must start with http:// or https://")
         elif not all_ok:
-            st.error("Please configure all required API keys in your .env file before running.")
+            st.error("Configure all API credentials before running.")
         else:
-            st.divider()
-            log_box = st.empty()
-            progress = st.progress(0, text="Starting...")
-            result_area = st.empty()
+            from pipeline.scraper import extract_keywords
+            from pipeline.keyword_planner import get_search_volumes
+            from pipeline.excel_writer import write_excel
+            from config.settings import MIN_SEARCH_VOLUME
 
-            logs: list[str] = []
+            log   = st.empty()
+            prog  = st.progress(0)
+            msgs: list[str] = []
 
             def _log(msg: str):
-                ts = datetime.now().strftime("%H:%M:%S")
-                logs.append(f"`{ts}` {msg}")
-                log_box.markdown("\n\n".join(logs[-10:]))
+                msgs.append(msg)
+                log.markdown("  \n".join(msgs[-8:]))
 
             try:
-                from pipeline.scraper import scrape_keywords
-                from pipeline.keyword_planner import get_search_volumes
-                from pipeline.excel_writer import write_single_page
+                _log(f"Extracting keywords from `{single_url}` …")
+                prog.progress(15)
+                candidates = extract_keywords(single_url)
+                _log(f"{len(candidates)} candidate keywords extracted.")
 
-                _log("Extracting keywords from page...")
-                progress.progress(20, text="Extracting keywords...")
-                keywords = scrape_keywords(url_input)
-
-                if not keywords:
-                    st.error("No keywords could be extracted from the page.")
+                if not candidates:
+                    st.error("No keywords extracted — check the URL and try again.")
                     st.stop()
 
-                _log(f"Extracted **{len(keywords)}** candidate keywords.")
-                progress.progress(50, text="Fetching search volumes...")
+                _log("Fetching search volumes from Google Ads …")
+                prog.progress(45)
+                volumes = get_search_volumes(candidates)
 
-                _log("Fetching search volumes from Google Ads...")
-                kv = get_search_volumes(keywords)
-                _log(f"**{len(kv)}** keywords passed the volume filter.")
-                progress.progress(85, text="Writing Excel...")
+                kw_list = sorted(
+                    [{"kw": kw, "volume": volumes.get(kw, 0)}
+                     for kw in candidates if volumes.get(kw, 0) > MIN_SEARCH_VOLUME],
+                    key=lambda x: x["volume"],
+                    reverse=True,
+                )
+                _log(f"{len(kw_list)} keywords with volume > {MIN_SEARCH_VOLUME}.")
 
-                _log("Writing Excel output...")
-                output_path = write_single_page(url_input, kv)
-                progress.progress(100, text="Done!")
+                if not kw_list:
+                    st.warning("No keywords with sufficient search volume.")
+                    st.stop()
+
+                _log("Writing Excel …")
+                prog.progress(85)
+                out = _output_path(single_url)
+                write_excel([{"url": single_url, "keywords": kw_list}], out)
+                prog.progress(100)
 
                 st.session_state["last_run"] = {
-                    "url": _domain(url_input),
+                    "domain": _domain(single_url),
                     "mode": "single",
-                    "candidate_kws": len(keywords),
-                    "filtered_kws": len(kv),
-                    "output_path": output_path,
+                    "candidates": len(candidates),
+                    "filtered": len(kw_list),
                 }
 
-                st.success(f"Done! File saved to `{output_path}`")
-
-                # Offer download
-                with open(output_path, "rb") as f:
+                st.success(f"Done — {len(kw_list)} keywords written to `{out}`")
+                with open(out, "rb") as fh:
                     st.download_button(
-                        label="Download Excel",
-                        data=f,
-                        file_name=os.path.basename(output_path),
+                        "Download Excel",
+                        fh,
+                        file_name=Path(out).name,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
-                # Preview top 20 keywords
-                if kv:
-                    st.markdown("### Preview (top 20 by volume)")
-                    sorted_kws = sorted(kv.items(), key=lambda x: -x[1]["volume"])[:20]
-                    rows = "".join(
-                        f"<tr><td>{kw}</td><td>{data['volume']:,}</td><td>{data['competition']}</td></tr>"
-                        for kw, data in sorted_kws
-                    )
-                    st.markdown(
-                        f'<table class="kw-table"><thead><tr><th>Keyword</th><th>Volume</th><th>Competition</th></tr></thead><tbody>{rows}</tbody></table>',
-                        unsafe_allow_html=True,
-                    )
+                st.markdown("### Preview (top 20)")
+                st.markdown(
+                    _kw_table_html([(r["kw"], r["volume"]) for r in kw_list[:20]]),
+                    unsafe_allow_html=True,
+                )
 
             except Exception as exc:
                 st.error(f"Error: {exc}")
                 raise
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-# TAB 2: Full Site Crawl
-# ────────────────────────────────────────────────────────────────────────────────
+# ── TAB 2: Full Site Crawl ────────────────────────────────────────────────────────
 with tab2:
-    col1, col2 = st.columns([3, 1])
-
-    with col1:
-        site_input = st.text_input(
-            "Site URL",
+    col_site, col_crawl = st.columns([4, 1])
+    with col_site:
+        site_url = st.text_input(
+            "Homepage URL",
             placeholder="https://example.com",
-            key="site_url",
+            key="site_url_input",
+            label_visibility="collapsed",
         )
+    with col_crawl:
+        crawl_btn = st.button("Crawl", key="crawl_btn", use_container_width=True)
 
-    with col2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        crawl_btn = st.button("Crawl Site", key="crawl_btn", use_container_width=True)
-
-    # Step A: crawl and show discovered categories
     if crawl_btn:
-        if not site_input:
-            st.error("Please enter a site URL.")
-        elif not _validate_url(site_input):
+        if not site_url:
+            st.error("Enter a site URL.")
+        elif not _validate_url(site_url):
             st.error("Invalid URL.")
         elif not all_ok:
-            st.error("Please configure all required API keys in your .env file before running.")
+            st.error("Configure all API credentials before running.")
         else:
-            with st.spinner("Crawling site for category pages..."):
+            from pipeline.site_crawler import crawl, _is_category_url
+
+            with st.spinner("Crawling site for category pages …"):
                 try:
-                    from pipeline.site_crawler import crawl
-                    cats = crawl(site_input)
-                    st.session_state["discovered_cats"] = cats
-                    st.session_state["site_url_for_run"] = site_input
+                    all_urls = crawl(site_url)
+                    # Apply the same filtering as main.py run_site
+                    _SKIP_SLUGS = {
+                        "shop", "store", "trgovina", "boutique", "tienda", "negozio", "winkel",
+                        "sale", "deals", "offers", "akcija", "aktualne-ugodnosti", "ugodnosti",
+                        "promotions", "rabais", "offerte", "angebote",
+                        "gift-cards", "gift-vouchers", "darilni-boni", "boni", "vouchers",
+                        "uncategorized", "neuvrsceni", "neuvrsteno", "brez-kategorije", "page",
+                    }
+                    seen: set[str] = set()
+                    cat_urls: list[str] = []
+                    for u in all_urls:
+                        if not _is_category_url(u):
+                            continue
+                        segments = [s for s in u.rstrip("/").split("/") if s]
+                        slug = segments[-1]
+                        if slug.isdigit() or slug in _SKIP_SLUGS or "page" in segments:
+                            continue
+                        if slug not in seen:
+                            seen.add(slug)
+                            cat_urls.append(u)
+
+                    st.session_state["crawled_urls"]   = cat_urls
+                    st.session_state["crawled_site"]   = site_url
                 except Exception as exc:
                     st.error(f"Crawl failed: {exc}")
 
-    # Show discovered categories + confirm button
-    if "discovered_cats" in st.session_state:
-        cats = st.session_state["discovered_cats"]
-        site_url_for_run = st.session_state.get("site_url_for_run", "")
+    # Show discovered categories and confirm
+    if "crawled_urls" in st.session_state:
+        cat_urls   = st.session_state["crawled_urls"]
+        crawled_site = st.session_state["crawled_site"]
 
-        if not cats:
-            st.warning("No category pages found on this site.")
+        if not cat_urls:
+            st.warning("No category pages found.")
         else:
-            st.success(f"Found **{len(cats)}** category pages.")
-            with st.expander("View discovered categories", expanded=True):
-                for i, u in enumerate(cats, 1):
-                    st.markdown(f"{i}. {u}")
+            st.success(f"Found **{len(cat_urls)}** category pages.")
+            with st.expander("Discovered categories", expanded=True):
+                for i, u in enumerate(cat_urls, 1):
+                    slug = u.rstrip("/").split("/")[-1]
+                    st.markdown(f"{i}. **{slug.replace('-', ' ').title()}** — `{u}`")
 
-            run_site = st.button(
-                f"Research keywords for all {len(cats)} pages",
-                key="run_site",
+            run_site_btn = st.button(
+                f"Research keywords for all {len(cat_urls)} pages",
+                key="run_site_btn",
                 type="primary",
             )
 
-            if run_site:
-                st.divider()
-                log_box2 = st.empty()
-                progress2 = st.progress(0, text="Starting...")
-                logs2: list[str] = []
-
-                def _log2(msg: str):
-                    ts = datetime.now().strftime("%H:%M:%S")
-                    logs2.append(f"`{ts}` {msg}")
-                    log_box2.markdown("\n\n".join(logs2[-12:]))
-
-                try:
-                    from pipeline.scraper import scrape_keywords
+            if run_site_btn:
+                if not all_ok:
+                    st.error("Configure all API credentials before running.")
+                else:
+                    from pipeline.scraper import extract_keywords
                     from pipeline.keyword_planner import get_search_volumes
-                    from pipeline.categorizer import categorize_keywords
-                    from pipeline.excel_writer import write_multi_category
+                    from pipeline.categorizer import assign_keywords_to_categories
+                    from pipeline.excel_writer import write_excel
+                    from config.settings import TOP_KEYWORDS_PER_URL, MIN_SEARCH_VOLUME
 
-                    all_keywords: list[str] = []
+                    log2  = st.empty()
+                    prog2 = st.progress(0)
+                    msgs2: list[str] = []
 
-                    _log2(f"Scraping {len(cats)} pages...")
-                    for idx, url in enumerate(cats):
-                        progress2.progress(
-                            int(10 + 40 * idx / len(cats)),
-                            text=f"Scraping page {idx+1}/{len(cats)}...",
+                    def _log2(msg: str):
+                        msgs2.append(msg)
+                        log2.markdown("  \n".join(msgs2[-10:]))
+
+                    try:
+                        category_names = [
+                            u.rstrip("/").split("/")[-1].replace("-", " ").replace("_", " ").title()
+                            for u in cat_urls
+                        ]
+
+                        all_candidates: list[str] = []
+                        for idx, url in enumerate(cat_urls):
+                            prog2.progress(int(5 + 40 * idx / len(cat_urls)))
+                            _log2(f"Scraping {idx+1}/{len(cat_urls)}: `{url}`")
+                            kws = extract_keywords(url, top_n=TOP_KEYWORDS_PER_URL)
+                            all_candidates.extend(kws)
+
+                        all_candidates = list(dict.fromkeys(all_candidates))
+                        _log2(f"{len(all_candidates)} unique candidates across all pages.")
+
+                        prog2.progress(50)
+                        _log2("Fetching search volumes …")
+                        volumes = get_search_volumes(all_candidates)
+
+                        kw_volumes = {
+                            kw: volumes.get(kw, 0)
+                            for kw in all_candidates
+                            if volumes.get(kw, 0) > MIN_SEARCH_VOLUME
+                        }
+                        _log2(f"{len(kw_volumes)} keywords passed volume filter.")
+
+                        prog2.progress(70)
+                        _log2("Categorizing with Claude …")
+                        categorized = assign_keywords_to_categories(kw_volumes, category_names)
+
+                        prog2.progress(90)
+                        _log2("Writing Excel …")
+                        results = [
+                            {"url": url, "category": cat, "keywords": categorized.get(cat, [])}
+                            for url, cat in zip(cat_urls, category_names)
+                            if categorized.get(cat)
+                        ]
+                        out = _output_path(crawled_site)
+                        write_excel(results, out)
+                        prog2.progress(100)
+
+                        del st.session_state["crawled_urls"]
+                        del st.session_state["crawled_site"]
+
+                        st.session_state["last_run"] = {
+                            "domain": _domain(crawled_site),
+                            "mode": "site",
+                            "candidates": len(all_candidates),
+                            "filtered": len(kw_volumes),
+                        }
+
+                        st.success(f"Done — {len(results)} categories written to `{out}`")
+                        with open(out, "rb") as fh:
+                            st.download_button(
+                                "Download Excel",
+                                fh,
+                                file_name=Path(out).name,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
+
+                        st.markdown("### Summary by category")
+                        rows_html = "".join(
+                            f"<tr><td>{r['category']}</td><td>{len(r['keywords'])}</td></tr>"
+                            for r in results
                         )
-                        kws = scrape_keywords(url)
-                        all_keywords.extend(kws)
-                        _log2(f"Page {idx+1}/{len(cats)}: {len(kws)} kws — `{url}`")
-
-                    unique_kws = list(dict.fromkeys(
-                        kw.lower().strip() for kw in all_keywords if kw.strip()
-                    ))
-                    _log2(f"**{len(unique_kws)}** unique candidate keywords total.")
-
-                    progress2.progress(55, text="Fetching search volumes...")
-                    _log2("Fetching volumes from Google Ads...")
-                    kv = get_search_volumes(unique_kws)
-                    _log2(f"**{len(kv)}** keywords passed the volume filter.")
-
-                    progress2.progress(75, text="Categorizing keywords...")
-                    _log2("Categorizing keywords with Claude...")
-                    categorized = categorize_keywords(kv, cats)
-                    _log2(f"Keywords assigned to **{len(categorized)}** categories.")
-
-                    progress2.progress(90, text="Writing Excel...")
-                    _log2("Writing Excel output...")
-                    output_path = write_multi_category(site_url_for_run, categorized)
-                    progress2.progress(100, text="Done!")
-
-                    st.session_state["last_run"] = {
-                        "url": _domain(site_url_for_run),
-                        "mode": "site",
-                        "candidate_kws": len(unique_kws),
-                        "filtered_kws": len(kv),
-                        "output_path": output_path,
-                    }
-                    # Clear crawl state
-                    del st.session_state["discovered_cats"]
-
-                    st.success(f"Done! File saved to `{output_path}`")
-
-                    with open(output_path, "rb") as f:
-                        st.download_button(
-                            label="Download Excel",
-                            data=f,
-                            file_name=os.path.basename(output_path),
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        st.markdown(
+                            '<table class="kw-table"><thead><tr><th>Category</th>'
+                            f"<th>Keywords</th></tr></thead><tbody>{rows_html}</tbody></table>",
+                            unsafe_allow_html=True,
                         )
 
-                    # Summary per category
-                    st.markdown("### Summary by category")
-                    rows = "".join(
-                        f"<tr><td>{cat}</td><td>{len(kws)}</td></tr>"
-                        for cat, kws in categorized.items()
-                    )
-                    st.markdown(
-                        f'<table class="kw-table"><thead><tr><th>Category</th><th>Keywords</th></tr></thead><tbody>{rows}</tbody></table>',
-                        unsafe_allow_html=True,
-                    )
-
-                except Exception as exc:
-                    st.error(f"Error: {exc}")
-                    raise
+                    except Exception as exc:
+                        st.error(f"Error: {exc}")
+                        raise
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-# TAB 3: CSV Upload
-# ────────────────────────────────────────────────────────────────────────────────
+# ── TAB 3: CSV Upload ─────────────────────────────────────────────────────────────
 with tab3:
-    st.markdown("Upload a CSV file containing product/category page URLs. One sheet per URL in the output.")
-
+    st.markdown(
+        "Upload a CSV file with one product/category URL per line. "
+        "One sheet per URL in the output."
+    )
     uploaded = st.file_uploader("CSV file", type=["csv"], key="csv_upload")
-
-    run_csv_btn = st.button("Run", key="run_csv", type="primary", disabled=not uploaded)
+    run_csv_btn = st.button("Run", key="run_csv_btn", type="primary", disabled=not uploaded)
 
     if run_csv_btn and uploaded:
         if not all_ok:
-            st.error("Please configure all required API keys in your .env file before running.")
+            st.error("Configure all API credentials before running.")
         else:
-            import tempfile as _tmpfile
+            from pipeline.url_loader import load_urls
+            from pipeline.scraper import extract_keywords
+            from pipeline.keyword_planner import get_search_volumes
+            from pipeline.excel_writer import write_excel
+            from config.settings import TOP_KEYWORDS_PER_URL, MIN_SEARCH_VOLUME
 
-            # Save upload to a temp file so url_loader can read it
-            with _tmpfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            # Write upload to a temp file so url_loader can parse it
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
                 tmp.write(uploaded.read())
                 tmp_path = tmp.name
 
-            st.divider()
-            log_box3 = st.empty()
-            progress3 = st.progress(0, text="Loading URLs...")
-            logs3: list[str] = []
+            log3  = st.empty()
+            prog3 = st.progress(0)
+            msgs3: list[str] = []
 
             def _log3(msg: str):
-                ts = datetime.now().strftime("%H:%M:%S")
-                logs3.append(f"`{ts}` {msg}")
-                log_box3.markdown("\n\n".join(logs3[-12:]))
+                msgs3.append(msg)
+                log3.markdown("  \n".join(msgs3[-10:]))
 
             try:
-                from pipeline.url_loader import load_urls
-                from pipeline.scraper import scrape_keywords
-                from pipeline.keyword_planner import get_search_volumes
-                from pipeline.excel_writer import write_multi_category
-
                 urls = load_urls(tmp_path)
                 if not urls:
                     st.error("No URLs found in the CSV file.")
                     st.stop()
 
-                _log3(f"Loaded **{len(urls)}** URLs from CSV.")
+                _log3(f"Loaded **{len(urls)}** URLs.")
 
-                # Scrape
-                all_keywords: list[str] = []
-                page_keyword_map: dict[str, list[str]] = {}
+                # Scrape each URL, track keywords per URL
+                url_kws: dict[str, list[str]] = {}
+                all_candidates: list[str] = []
 
                 for idx, url in enumerate(urls):
-                    progress3.progress(
-                        int(10 + 40 * idx / len(urls)),
-                        text=f"Scraping page {idx+1}/{len(urls)}...",
-                    )
-                    kws = scrape_keywords(url)
-                    page_keyword_map[url] = kws
-                    all_keywords.extend(kws)
-                    _log3(f"Page {idx+1}/{len(urls)}: {len(kws)} kws — `{url}`")
+                    prog3.progress(int(5 + 40 * idx / len(urls)))
+                    _log3(f"Scraping {idx+1}/{len(urls)}: `{url}`")
+                    kws = extract_keywords(url, top_n=TOP_KEYWORDS_PER_URL)
+                    url_kws[url] = kws
+                    all_candidates.extend(kws)
 
-                unique_kws = list(dict.fromkeys(
-                    kw.lower().strip() for kw in all_keywords if kw.strip()
-                ))
-                _log3(f"**{len(unique_kws)}** unique candidate keywords total.")
+                all_candidates = list(dict.fromkeys(all_candidates))
+                _log3(f"{len(all_candidates)} unique candidates.")
 
-                progress3.progress(55, text="Fetching search volumes...")
-                _log3("Fetching volumes from Google Ads...")
-                kv = get_search_volumes(unique_kws)
-                _log3(f"**{len(kv)}** keywords passed the volume filter.")
+                prog3.progress(50)
+                _log3("Fetching search volumes …")
+                volumes = get_search_volumes(all_candidates)
 
-                progress3.progress(80, text="Writing Excel...")
+                prog3.progress(85)
+                _log3("Building output …")
 
-                # Build per-URL sheets
-                def _sheet_name(url: str) -> str:
-                    path = urlparse(url).path.rstrip("/")
-                    slug = path.split("/")[-1] if "/" in path else urlparse(url).netloc
-                    return slug.replace("-", " ").replace("_", " ").title()
-
-                categorized: dict[str, list[dict]] = {}
+                # One result entry per URL (no category — sheet name derived from URL)
+                results = []
+                skipped = 0
                 for url in urls:
-                    page_kws = page_keyword_map.get(url, [])
-                    sheet = _sheet_name(url)
-                    entries = [
-                        {"keyword": kw.lower().strip(),
-                         "volume": kv[kw.lower().strip()]["volume"],
-                         "competition": kv[kw.lower().strip()]["competition"]}
-                        for kw in page_kws
-                        if kw.lower().strip() in kv
-                    ]
-                    entries.sort(key=lambda x: -x["volume"])
-                    if entries:
-                        base, i = sheet, 2
-                        while sheet in categorized:
-                            sheet = f"{base} {i}"; i += 1
-                        categorized[sheet] = entries
+                    kw_list = sorted(
+                        [{"kw": kw, "volume": volumes.get(kw, 0)}
+                         for kw in url_kws.get(url, [])
+                         if volumes.get(kw, 0) > MIN_SEARCH_VOLUME],
+                        key=lambda x: x["volume"],
+                        reverse=True,
+                    )
+                    if kw_list:
+                        results.append({"url": url, "keywords": kw_list})
+                    else:
+                        skipped += 1
 
-                first_domain = urlparse(urls[0]).netloc
-                output_path = write_multi_category(f"https://{first_domain}", categorized)
-                progress3.progress(100, text="Done!")
+                _log3(f"{len(results)} URLs with results, {skipped} skipped.")
+
+                if not results:
+                    st.warning("No keywords with sufficient search volume.")
+                    st.stop()
+
+                first_url = urls[0]
+                out = _output_path(first_url)
+                write_excel(results, out)
+                prog3.progress(100)
 
                 st.session_state["last_run"] = {
-                    "url": first_domain,
+                    "domain": _domain(first_url),
                     "mode": "csv",
-                    "candidate_kws": len(unique_kws),
-                    "filtered_kws": len(kv),
-                    "output_path": output_path,
+                    "candidates": len(all_candidates),
+                    "filtered": sum(len(r["keywords"]) for r in results),
                 }
 
-                st.success(f"Done! File saved to `{output_path}`")
-
-                with open(output_path, "rb") as f:
+                st.success(f"Done — {len(results)} sheets written to `{out}`")
+                with open(out, "rb") as fh:
                     st.download_button(
-                        label="Download Excel",
-                        data=f,
-                        file_name=os.path.basename(output_path),
+                        "Download Excel",
+                        fh,
+                        file_name=Path(out).name,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
                 st.markdown("### Summary by page")
-                rows = "".join(
-                    f"<tr><td>{sheet}</td><td>{len(kws)}</td></tr>"
-                    for sheet, kws in categorized.items()
+                rows_html = "".join(
+                    f"<tr><td><code>{r['url']}</code></td><td>{len(r['keywords'])}</td></tr>"
+                    for r in results
                 )
                 st.markdown(
-                    f'<table class="kw-table"><thead><tr><th>Page</th><th>Keywords</th></tr></thead><tbody>{rows}</tbody></table>',
+                    '<table class="kw-table"><thead><tr><th>URL</th>'
+                    f"<th>Keywords</th></tr></thead><tbody>{rows_html}</tbody></table>",
                     unsafe_allow_html=True,
                 )
 

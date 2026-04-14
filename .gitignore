@@ -1,9 +1,5 @@
-# Environment / credentials — NEVER commit these
+# Environment
 .env
-*.env
-
-# Output files
-data/output/*.xlsx
 
 # Python
 __pycache__/
@@ -14,12 +10,13 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-.eggs/
+*.egg
 
 # Virtual environments
-.venv/
 venv/
+.venv/
 env/
+.env/
 
 # IDE
 .vscode/
@@ -27,9 +24,16 @@ env/
 *.swp
 *.swo
 
+# Output files
+data/output/*.xlsx
+data/output/*.csv
+
+# Cache
+data/cache/
+
+# Input files (may contain sensitive URLs)
+data/input/
+
 # OS
 .DS_Store
 Thumbs.db
-
-# Streamlit — secrets file contains credentials, never commit it
-.streamlit/secrets.toml

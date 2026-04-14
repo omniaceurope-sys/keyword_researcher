@@ -1,43 +1,20 @@
-# Keyword Researcher Agent
+# Keyword Researcher
 
-An automated keyword research pipeline for ecommerce websites. It crawls category pages, generates search keywords using Claude AI, fetches real search volumes from Google Ads Keyword Planner, and exports a ready-to-use Excel file.
-
----
+A CLI tool that crawls ecommerce websites, extracts search keywords using Claude AI, fetches real search volumes from Google Ads Keyword Planner, and outputs a structured Excel workbook ready for Google Ads campaign planning.
 
 ## Features
 
-- **Single page mode** — research keywords for one URL in minutes
-- **Full site mode** — crawl an entire ecommerce site, extract keywords per category, and get a multi-sheet Excel output
-- **Claude-powered extraction** — generates ~30 realistic search queries per page (not product titles)
-- **Real search volumes** — via Google Ads Keyword Planner API, with competition level
-- **Smart categorization** — Claude assigns keywords to the most relevant category
-- **Streamlit UI** — web interface for non-technical users
-- **CLI** — scriptable for automation
+- Three input modes: single URL, full-site crawl, or CSV list
+- Keyword extraction via Claude Sonnet (functional queries, not brand names)
+- Real search volumes from Google Ads Keyword Planner with local caching
+- AI-powered keyword categorization across site sections
+- Excel output — one sheet per category, sorted by volume
 
----
+## Requirements
 
-## Project Structure
-
-```
-keyword_researcher/
-├── app.py                     ← Streamlit web UI
-├── main.py                    ← CLI entry point
-├── requirements.txt
-├── .env.example               ← credential template
-├── config/
-│   └── settings.py            ← env vars + constants
-├── pipeline/
-│   ├── site_crawler.py        ← BFS category URL discovery
-│   ├── scraper.py             ← keyword extraction via Claude
-│   ├── keyword_planner.py     ← Google Ads search volumes
-│   ├── categorizer.py         ← keyword→category assignment via Claude
-│   └── excel_writer.py        ← formatted .xlsx output
-├── tests/
-│   └── test_basic.py          ← unit tests (no API calls)
-└── data/output/               ← generated .xlsx files
-```
-
----
+- Python 3.12+
+- Google Ads account with Keyword Planner access and a developer token
+- Anthropic API key
 
 ## Setup
 
@@ -49,108 +26,115 @@ pip install -r requirements.txt
 
 ### 2. Configure credentials
 
-Copy `.env.example` to `.env` and fill in your API keys:
-
 ```bash
 cp .env.example .env
 ```
 
-Required variables:
+Fill in `.env`:
 
 | Variable | Description |
 |---|---|
-| `ANTHROPIC_API_KEY` | Claude API key from [console.anthropic.com](https://console.anthropic.com) |
-| `GOOGLE_ADS_DEVELOPER_TOKEN` | From Google Ads API Center |
-| `GOOGLE_ADS_CLIENT_ID` | OAuth2 client ID |
-| `GOOGLE_ADS_CLIENT_SECRET` | OAuth2 client secret |
-| `GOOGLE_ADS_REFRESH_TOKEN` | OAuth2 refresh token |
+| `ANTHROPIC_API_KEY` | Anthropic Console → API Keys |
+| `GOOGLE_ADS_DEVELOPER_TOKEN` | Google Ads → Tools → API Center |
+| `GOOGLE_ADS_CLIENT_ID` | Google Cloud Console → OAuth 2.0 Client ID |
+| `GOOGLE_ADS_CLIENT_SECRET` | Google Cloud Console → OAuth 2.0 Client Secret |
+| `GOOGLE_ADS_REFRESH_TOKEN` | Generated via OAuth flow |
 | `GOOGLE_ADS_LOGIN_CUSTOMER_ID` | MCC account ID (no dashes) |
-| `GOOGLE_ADS_CUSTOMER_ID` | Client account ID (no dashes) |
+| `GOOGLE_ADS_CUSTOMER_ID` | Target account ID (no dashes) |
 
----
+## Streamlit UI
 
-## Usage
-
-### Web UI (Streamlit)
+A web interface is available for running the tool without the CLI:
 
 ```bash
 streamlit run app.py
 ```
 
-Open [http://localhost:8501](http://localhost:8501) in your browser.
+This opens a browser UI with three tabs matching the three CLI modes. On **Streamlit Cloud**, add all credentials from `.env.example` to the app's **Secrets** panel (`Settings → Secrets`) — the app injects them into the environment automatically before any pipeline code runs.
 
-### CLI — Single page
+---
+
+## CLI Usage
+
+### Single page
+
+Research keywords for one product or category URL:
 
 ```bash
 python main.py --url "https://example.com/collections/headphones"
 ```
 
-### CLI — Full site crawl
+### Full site crawl
+
+Crawl an entire site, discover category pages, and output one sheet per category:
 
 ```bash
 python main.py --site "https://example.com"
 ```
 
----
+### CSV list
+
+Research keywords for a list of URLs from a CSV file (one sheet per URL):
+
+```bash
+python main.py --csv data/input/urls.csv
+```
+
+CSV format — one URL per line, no header required:
+
+```
+https://example.com/products/product-a
+https://example.com/products/product-b
+```
+
+### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--output` | `data/output/keyword_research.xlsx` | Output file path |
+| `--geo` | `2705` (Slovenia) | Google Ads geo target constant ID |
+| `--language` | `1023` (Slovenian) | Google Ads language constant ID |
+| `--limit` | none | Process only the first N URLs (CSV mode) |
 
 ## Output
 
-Excel file saved to `data/output/{domain}_{date}.xlsx`:
+Each run produces an `.xlsx` file in `data/output/`. Each sheet contains:
 
-- **Single page mode** — one sheet with all keywords
-- **Full site mode** — one sheet per category
+- Source URL in the header row
+- `Keyword` and `Avg Monthly Volume` columns
+- Keywords sorted by volume descending
+- Only keywords with > 10 avg monthly searches
 
-Each sheet contains:
-
-| Column | Description |
-|---|---|
-| Keyword | Search query |
-| Volume | Average monthly searches |
-| Competition | LOW / MEDIUM / HIGH |
-
----
-
-## Pipeline Overview
+## Project Structure
 
 ```
---url mode:
-  URL → scraper (Claude) → keyword_planner (Google Ads) → excel_writer
-
---site mode:
-  homepage → site_crawler → scraper ×N (Claude) → keyword_planner (Google Ads)
-           → categorizer (Claude) → excel_writer
+keyword_researcher/
+├── main.py                  — entry point
+├── requirements.txt
+├── .env.example
+├── MANUAL.md                — end-user guide
+├── config/
+│   └── settings.py          — env vars and constants
+├── pipeline/
+│   ├── url_loader.py        — reads URL CSV files
+│   ├── site_crawler.py      — BFS site crawler
+│   ├── scraper.py           — Claude-powered keyword extraction
+│   ├── keyword_planner.py   — Google Ads volume lookup (cached)
+│   ├── categorizer.py       — Claude-powered keyword categorization
+│   └── excel_writer.py      — Excel output writer
+└── data/
+    ├── input/               — place your urls.csv files here
+    ├── output/              — generated .xlsx files
+    └── cache/               — volumes_cache.json (auto-generated)
 ```
 
-### Step details
+## Caching
 
-| Step | Module | What it does |
-|---|---|---|
-| 1 | `site_crawler` | BFS crawl, finds category pages (max 2 levels deep) |
-| 2 | `scraper` | Fetches HTML, strips noise, asks Claude for ~30 search queries |
-| 3 | `keyword_planner` | Batches keywords into groups of 20, calls Keyword Planner API |
-| 4 | `categorizer` | Claude assigns each keyword to the best matching category |
-| 5 | `excel_writer` | Writes formatted `.xlsx` with bold headers + auto-width columns |
+Search volumes are cached in `data/cache/volumes_cache.json` keyed by geo+language. Repeated runs skip the API for already-known keywords, saving quota and time.
 
----
+## Notes
 
-## Running Tests
-
-```bash
-python -m pytest tests/ -v
-```
-
-Tests cover URL filtering, content extraction, deduplication, and Excel writing — no API calls required.
-
----
-
-## Configuration
-
-Edit `config/settings.py` to adjust:
-
-| Constant | Default | Description |
-|---|---|---|
-| `CRAWL_MAX_DEPTH` | `2` | How deep to crawl from homepage |
-| `CRAWL_DELAY_SECONDS` | `1` | Delay between crawl requests |
-| `KEYWORDS_PER_PAGE` | `30` | Keywords to generate per page |
-| `KP_BATCH_SIZE` | `20` | Keywords per Google Ads API call |
-| `KP_MIN_VOLUME` | `10` | Minimum monthly volume to keep |
+- Keywords are generated in the same language as the page content
+- Brand names and model names are excluded from keyword output
+- The Google Ads API batches requests in groups of 20 to stay within API limits
+- The site crawler follows internal links up to 2 levels deep
