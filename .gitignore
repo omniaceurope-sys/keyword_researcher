@@ -31,5 +31,5 @@ env/
 .DS_Store
 Thumbs.db
 
-# Streamlit
-.streamlit/
+# Streamlit — secrets file contains credentials, never commit it
+.streamlit/secrets.toml

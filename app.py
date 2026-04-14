@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv()  # no-op on Streamlit Cloud, works locally
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -64,15 +64,26 @@ st.markdown("""
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
+def _get_secret(key: str) -> str | None:
+    """Read from st.secrets first, then env vars (works on Cloud and locally)."""
+    try:
+        val = st.secrets.get(key)
+        if val:
+            return str(val)
+    except Exception:
+        pass
+    return os.getenv(key)
+
+
 def _check_env() -> dict[str, bool]:
     checks = {
-        "Anthropic API key": bool(os.getenv("ANTHROPIC_API_KEY")),
-        "Google Ads developer token": bool(os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN")),
-        "Google Ads client ID": bool(os.getenv("GOOGLE_ADS_CLIENT_ID")),
-        "Google Ads client secret": bool(os.getenv("GOOGLE_ADS_CLIENT_SECRET")),
-        "Google Ads refresh token": bool(os.getenv("GOOGLE_ADS_REFRESH_TOKEN")),
-        "Google Ads login customer ID": bool(os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID")),
-        "Google Ads customer ID": bool(os.getenv("GOOGLE_ADS_CUSTOMER_ID")),
+        "Anthropic API key": bool(_get_secret("ANTHROPIC_API_KEY")),
+        "Google Ads developer token": bool(_get_secret("GOOGLE_ADS_DEVELOPER_TOKEN")),
+        "Google Ads client ID": bool(_get_secret("GOOGLE_ADS_CLIENT_ID")),
+        "Google Ads client secret": bool(_get_secret("GOOGLE_ADS_CLIENT_SECRET")),
+        "Google Ads refresh token": bool(_get_secret("GOOGLE_ADS_REFRESH_TOKEN")),
+        "Google Ads login customer ID": bool(_get_secret("GOOGLE_ADS_LOGIN_CUSTOMER_ID")),
+        "Google Ads customer ID": bool(_get_secret("GOOGLE_ADS_CUSTOMER_ID")),
     }
     return checks
 
