@@ -23,20 +23,32 @@ HEADERS = {
 }
 
 KEYWORD_EXTRACTION_PROMPT = """\
-You are a keyword research expert. Given the content of an ecommerce page, generate approximately {n} search keywords that potential customers would type into Google when looking for these products.
+You are a Google Ads keyword research specialist.
+
+Your job is to generate search keywords that real customers type into Google \
+when looking for the products shown on a page.
 
 Rules:
-- Generate functional search queries, NOT product names or brand names
-- Focus on how real people search: problems they want to solve, features they want, comparisons they make
-- Include a mix of:
-  - Symptom/problem keywords (e.g. "how to fix back pain")
-  - Product category keywords (e.g. "ergonomic office chair")
-  - Feature-specific keywords (e.g. "noise cancelling headphones under 200")
-  - Comparison keywords (e.g. "best wireless earbuds 2026")
-  - Long-tail keywords (e.g. "comfortable headphones for long flights")
-- Write keywords in the same language as the page content
-- Do NOT include brand names from the page
-- Return one keyword per line, nothing else
+- Generate keywords in the SAME LANGUAGE as the product page.
+- USE THE URL to understand the page's main topic. Only generate keywords \
+  relevant to that topic — ignore unrelated products that may appear in \
+  navigation, footers, or related product sections.
+- IMPORTANT: Product pages often use creative, branded, or poetic product names. \
+  Do NOT use these as keywords. Instead, identify what the product IS or DOES \
+  and generate the functional search queries customers actually use.
+  Example: "ProGlow X3 Serum" → "anti-aging serum", "face serum vitamin C" — NOT "proglow x3"
+  Example: "Mountain Breeze Bundle" → "hiking gear set", "outdoor equipment bundle" — NOT "mountain breeze bundle"
+- Focus on what the customer is SEARCHING FOR: the product type, its use case, \
+  the problem it solves, and the outcome they want.
+- Include natural variations: different word orders, synonyms, action-oriented \
+  phrases (how to X, best X for Y), and feature-focused queries.
+- Prefer 2-4 word phrases over single words — they have higher purchase intent.
+- Do NOT include brand names, model names, prices, or promotional language.
+- Respond ONLY with a valid JSON array of strings. No markdown, no explanation.
+- Example output: ["wireless noise cancelling headphones", "over ear headphones \
+  for travel", "bluetooth headphones long battery"]
+
+Generate approximately {n} keywords.
 
 Page URL: {url}
 Page content:
@@ -164,8 +176,30 @@ def _call_claude(url: str, content: str, client: anthropic.Anthropic) -> list[st
         messages=[{"role": "user", "content": prompt}],
     )
     raw = message.content[0].text.strip()
-    keywords = [line.strip() for line in raw.splitlines() if line.strip()]
-    return keywords
+
+    # Response is a JSON array of strings
+    try:
+        keywords = json.loads(raw)
+        if isinstance(keywords, list):
+            return [kw.strip() for kw in keywords if isinstance(kw, str) and kw.strip()]
+    except json.JSONDecodeError:
+        # Fallback: strip markdown fences and retry parse
+        cleaned = raw
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+            cleaned = cleaned.strip()
+        try:
+            keywords = json.loads(cleaned)
+            if isinstance(keywords, list):
+                return [kw.strip() for kw in keywords if isinstance(kw, str) and kw.strip()]
+        except json.JSONDecodeError:
+            pass
+        # Last resort: treat each non-empty line as a keyword
+        return [line.strip().strip('"').strip("'").strip(",") for line in raw.splitlines() if line.strip()]
+
+    return []
 
 
 def scrape_keywords(url: str) -> list[str]:
