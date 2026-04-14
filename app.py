@@ -148,7 +148,7 @@ with st.sidebar:
 st.title("Generate Keywords")
 st.markdown("Enter a URL to research keywords. The tool will extract search queries, fetch real volumes from Google Ads, and export an Excel file.")
 
-tab1, tab2 = st.tabs(["1 — Single URL", "2 — Full Site Crawl"])
+tab1, tab2, tab3 = st.tabs(["1 — Single URL", "2 — Full Site Crawl", "3 — CSV Upload"])
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -387,3 +387,136 @@ with tab2:
                 except Exception as exc:
                     st.error(f"Error: {exc}")
                     raise
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# TAB 3: CSV Upload
+# ────────────────────────────────────────────────────────────────────────────────
+with tab3:
+    st.markdown("Upload a CSV file containing product/category page URLs. One sheet per URL in the output.")
+
+    uploaded = st.file_uploader("CSV file", type=["csv"], key="csv_upload")
+
+    run_csv_btn = st.button("Run", key="run_csv", type="primary", disabled=not uploaded)
+
+    if run_csv_btn and uploaded:
+        if not all_ok:
+            st.error("Please configure all required API keys in your .env file before running.")
+        else:
+            import tempfile as _tmpfile
+
+            # Save upload to a temp file so url_loader can read it
+            with _tmpfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+                tmp.write(uploaded.read())
+                tmp_path = tmp.name
+
+            st.divider()
+            log_box3 = st.empty()
+            progress3 = st.progress(0, text="Loading URLs...")
+            logs3: list[str] = []
+
+            def _log3(msg: str):
+                ts = datetime.now().strftime("%H:%M:%S")
+                logs3.append(f"`{ts}` {msg}")
+                log_box3.markdown("\n\n".join(logs3[-12:]))
+
+            try:
+                from pipeline.url_loader import load_urls
+                from pipeline.scraper import scrape_keywords
+                from pipeline.keyword_planner import get_search_volumes
+                from pipeline.excel_writer import write_multi_category
+
+                urls = load_urls(tmp_path)
+                if not urls:
+                    st.error("No URLs found in the CSV file.")
+                    st.stop()
+
+                _log3(f"Loaded **{len(urls)}** URLs from CSV.")
+
+                # Scrape
+                all_keywords: list[str] = []
+                page_keyword_map: dict[str, list[str]] = {}
+
+                for idx, url in enumerate(urls):
+                    progress3.progress(
+                        int(10 + 40 * idx / len(urls)),
+                        text=f"Scraping page {idx+1}/{len(urls)}...",
+                    )
+                    kws = scrape_keywords(url)
+                    page_keyword_map[url] = kws
+                    all_keywords.extend(kws)
+                    _log3(f"Page {idx+1}/{len(urls)}: {len(kws)} kws — `{url}`")
+
+                unique_kws = list(dict.fromkeys(
+                    kw.lower().strip() for kw in all_keywords if kw.strip()
+                ))
+                _log3(f"**{len(unique_kws)}** unique candidate keywords total.")
+
+                progress3.progress(55, text="Fetching search volumes...")
+                _log3("Fetching volumes from Google Ads...")
+                kv = get_search_volumes(unique_kws)
+                _log3(f"**{len(kv)}** keywords passed the volume filter.")
+
+                progress3.progress(80, text="Writing Excel...")
+
+                # Build per-URL sheets
+                def _sheet_name(url: str) -> str:
+                    path = urlparse(url).path.rstrip("/")
+                    slug = path.split("/")[-1] if "/" in path else urlparse(url).netloc
+                    return slug.replace("-", " ").replace("_", " ").title()
+
+                categorized: dict[str, list[dict]] = {}
+                for url in urls:
+                    page_kws = page_keyword_map.get(url, [])
+                    sheet = _sheet_name(url)
+                    entries = [
+                        {"keyword": kw.lower().strip(),
+                         "volume": kv[kw.lower().strip()]["volume"],
+                         "competition": kv[kw.lower().strip()]["competition"]}
+                        for kw in page_kws
+                        if kw.lower().strip() in kv
+                    ]
+                    entries.sort(key=lambda x: -x["volume"])
+                    if entries:
+                        base, i = sheet, 2
+                        while sheet in categorized:
+                            sheet = f"{base} {i}"; i += 1
+                        categorized[sheet] = entries
+
+                first_domain = urlparse(urls[0]).netloc
+                output_path = write_multi_category(f"https://{first_domain}", categorized)
+                progress3.progress(100, text="Done!")
+
+                st.session_state["last_run"] = {
+                    "url": first_domain,
+                    "mode": "csv",
+                    "candidate_kws": len(unique_kws),
+                    "filtered_kws": len(kv),
+                    "output_path": output_path,
+                }
+
+                st.success(f"Done! File saved to `{output_path}`")
+
+                with open(output_path, "rb") as f:
+                    st.download_button(
+                        label="Download Excel",
+                        data=f,
+                        file_name=os.path.basename(output_path),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+                st.markdown("### Summary by page")
+                rows = "".join(
+                    f"<tr><td>{sheet}</td><td>{len(kws)}</td></tr>"
+                    for sheet, kws in categorized.items()
+                )
+                st.markdown(
+                    f'<table class="kw-table"><thead><tr><th>Page</th><th>Keywords</th></tr></thead><tbody>{rows}</tbody></table>',
+                    unsafe_allow_html=True,
+                )
+
+            except Exception as exc:
+                st.error(f"Error: {exc}")
+                raise
+            finally:
+                os.unlink(tmp_path)
