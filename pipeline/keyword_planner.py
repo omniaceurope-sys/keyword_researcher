@@ -1,6 +1,7 @@
 """Fetch average monthly search volumes from Google Ads Keyword Planner."""
 
 import json
+import os
 import sys
 from math import ceil
 from pathlib import Path
@@ -37,6 +38,8 @@ def _save_cache(cache: dict) -> None:
 
 
 def _build_client() -> GoogleAdsClient:
+    # load_from_env() raises if use_proto_plus is absent — provide a safe default.
+    os.environ.setdefault("GOOGLE_ADS_USE_PROTO_PLUS", "True")
     return GoogleAdsClient.load_from_env()
 
 
