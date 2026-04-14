@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 from math import ceil
 from pathlib import Path
@@ -43,6 +44,19 @@ def _build_client() -> GoogleAdsClient:
     return GoogleAdsClient.load_from_env()
 
 
+def _normalize(kw: str) -> str:
+    """Normalize a keyword to match the form Google Ads returns.
+
+    Google replaces hyphens with spaces and strips apostrophes, so
+    'slim fit t-shirt men' comes back as 'slim fit t shirt men' and
+    "men's t-shirt" comes back as 'mens t shirt'.
+    Normalizing both sides before matching fixes the lookup.
+    """
+    kw = re.sub(r"['\u2019]", "", kw.lower())  # remove apostrophes
+    kw = kw.replace("-", " ")                   # hyphen → space (Google's rule)
+    return re.sub(r"\s+", " ", kw).strip()      # collapse any double spaces
+
+
 def _fetch_batch(
     client: GoogleAdsClient,
     keywords: list[str],
@@ -63,12 +77,20 @@ def _fetch_batch(
     request.include_adult_keywords = False
     request.keyword_seed.keywords.extend(keywords)
 
+    # Map normalized form → original submitted keyword so we can store
+    # volumes under the key the caller expects even if Google strips
+    # hyphens/apostrophes in the returned idea text.
+    norm_to_original = {_normalize(kw): kw for kw in keywords}
+
     results = {}
     response = keyword_plan_idea_service.generate_keyword_ideas(request=request)
     for idea in response:
-        kw = idea.text.lower().strip()
-        volume = idea.keyword_idea_metrics.avg_monthly_searches
-        results[kw] = int(volume) if volume else 0
+        api_text = idea.text.lower().strip()
+        # Match by normalized form first, then exact
+        original = norm_to_original.get(_normalize(api_text)) or norm_to_original.get(api_text)
+        if original:
+            volume = idea.keyword_idea_metrics.avg_monthly_searches
+            results[original] = int(volume) if volume else 0
     return results
 
 
