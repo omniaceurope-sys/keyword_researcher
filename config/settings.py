@@ -44,7 +44,7 @@ KEYWORDS_PER_PAGE = 30
 
 # Keyword Planner settings
 KP_BATCH_SIZE = 20
-KP_MIN_VOLUME = 10
+KP_MIN_VOLUME = 100
 
 # Output — use system temp dir so it works on Streamlit Cloud (ephemeral FS)
 OUTPUT_DIR = os.path.join(tempfile.gettempdir(), "keyword_researcher_output")

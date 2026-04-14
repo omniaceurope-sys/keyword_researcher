@@ -91,11 +91,17 @@ def _fetch_batch(
     )
     request.keyword_seed.keywords.extend(keyword_batch)
 
+    # Only return volumes for the keywords we submitted — Google returns a much
+    # larger expanded idea list by default which inflates results with brand terms.
+    submitted = {kw.lower().strip() for kw in keyword_batch}
+
     results = {}
     try:
         response = keyword_plan_idea_service.generate_keyword_ideas(request=request)
         for idea in response:
             kw = idea.text.lower().strip()
+            if kw not in submitted:
+                continue
             metrics = idea.keyword_idea_metrics
             volume = metrics.avg_monthly_searches
             competition = _competition_label(metrics.competition)
