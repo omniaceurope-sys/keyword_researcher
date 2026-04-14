@@ -157,19 +157,85 @@ tab1, tab2, tab3 = st.tabs(["Single URL", "Full Site Crawl", "CSV Upload"])
 
 # Common geo/language options shown in the UI
 _GEO_OPTIONS = {
-    "Slovenia (SI)": "2705",
-    "Croatia (HR)": "2191",
-    "Austria (AT)": "2040",
-    "Germany (DE)": "2276",
-    "United Kingdom (UK)": "2826",
-    "United States (US)": "2840",
-    "Global": "2840",  # broadest single-country proxy
+    # Western Europe
+    "United Kingdom (UK)":      "2826",
+    "Ireland (IE)":             "2372",
+    "France (FR)":              "2250",
+    "Germany (DE)":             "2276",
+    "Austria (AT)":             "2040",
+    "Switzerland (CH)":         "2756",
+    "Netherlands (NL)":         "2528",
+    "Belgium (BE)":             "2056",
+    "Luxembourg (LU)":          "2442",
+    "Spain (ES)":               "2724",
+    "Portugal (PT)":            "2620",
+    "Italy (IT)":               "2380",
+    "Malta (MT)":               "2470",
+    # Northern Europe
+    "Sweden (SE)":              "2752",
+    "Norway (NO)":              "2578",
+    "Denmark (DK)":             "2208",
+    "Finland (FI)":             "2246",
+    "Iceland (IS)":             "2352",
+    # Eastern Europe
+    "Poland (PL)":              "2616",
+    "Czech Republic (CZ)":      "2203",
+    "Slovakia (SK)":            "2703",
+    "Hungary (HU)":             "2348",
+    "Romania (RO)":             "2642",
+    "Bulgaria (BG)":            "2100",
+    "Ukraine (UA)":             "2804",
+    # South-Eastern Europe
+    "Slovenia (SI)":            "2705",
+    "Croatia (HR)":             "2191",
+    "Serbia (RS)":              "2688",
+    "Bosnia & Herzegovina (BA)":"2070",
+    "North Macedonia (MK)":     "2807",
+    "Albania (AL)":             "2008",
+    "Greece (GR)":              "2300",
+    "Cyprus (CY)":              "2196",
+    # Baltic States
+    "Estonia (EE)":             "2233",
+    "Latvia (LV)":              "2428",
+    "Lithuania (LT)":           "2440",
+    # Non-EU / Other
+    "United States (US)":       "2840",
+    "Turkey (TR)":              "2792",
 }
+
 _LANG_OPTIONS = {
-    "Slovenian": "1023",
-    "Croatian": "1038",
-    "German": "1001",
-    "English": "1000",
+    # Germanic
+    "English":      "1000",
+    "German":       "1001",
+    "Dutch":        "1010",
+    # Romance
+    "French":       "1002",
+    "Spanish":      "1003",
+    "Italian":      "1004",
+    "Portuguese":   "1014",
+    "Romanian":     "1028",
+    # Slavic
+    "Polish":       "1026",
+    "Czech":        "1021",
+    "Slovak":       "1033",
+    "Bulgarian":    "1020",
+    "Croatian":     "1038",
+    "Serbian":      "1035",
+    "Slovenian":    "1023",
+    "Ukrainian":    "1036",
+    # Nordic
+    "Swedish":      "1015",
+    "Norwegian":    "1013",
+    "Danish":       "1009",
+    "Finnish":      "1011",
+    # Other European
+    "Hungarian":    "1024",
+    "Greek":        "1022",
+    "Turkish":      "1016",
+    "Albanian":     "1032",
+    "Latvian":      "1029",
+    "Lithuanian":   "1030",
+    "Estonian":     "1043",
 }
 
 
