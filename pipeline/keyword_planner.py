@@ -4,11 +4,13 @@ import json
 import os
 import re
 import sys
+import time
 from math import ceil
 from pathlib import Path
 
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
+from google.api_core.exceptions import ResourceExhausted
 
 from config.settings import (
     GOOGLE_ADS_CUSTOMER_ID,
@@ -83,7 +85,16 @@ def _fetch_batch(
     norm_to_original = {_normalize(kw): kw for kw in keywords}
 
     results = {}
-    response = keyword_plan_idea_service.generate_keyword_ideas(request=request)
+    for attempt in range(4):
+        try:
+            response = keyword_plan_idea_service.generate_keyword_ideas(request=request)
+            break
+        except ResourceExhausted as exc:
+            if attempt == 3:
+                raise
+            wait = 5 * (attempt + 1)
+            print(f"[keyword_planner] rate limited, retrying in {wait}s…", file=sys.stderr)
+            time.sleep(wait)
     for idea in response:
         api_text = idea.text.lower().strip()
         # Match by normalized form first, then exact
@@ -126,6 +137,8 @@ def get_search_volumes(
             batch = missing[i * KEYWORD_PLANNER_BATCH : (i + 1) * KEYWORD_PLANNER_BATCH]
             batch_result = _fetch_batch(client, batch, customer_id, language_id, geo_target_id)
             cached_volumes.update(batch_result)
+            if i < n_batches - 1:
+                time.sleep(1)
 
         # Default 0 for anything the API didn't return
         for kw in missing:
