@@ -37,7 +37,7 @@ Rules:
 def _call_claude(user_message: str) -> str:
     message = _client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=2048,
+        max_tokens=8096,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
