@@ -1,5 +1,6 @@
 """Crawl a website to discover product and category pages."""
 
+import re
 import sys
 from collections import deque, defaultdict
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -26,6 +27,7 @@ _SKIP_SEGMENTS = {
     "privacy", "terms", "cookies", "legal", "policy", "sitemap",
     "search", "404", "error", "cdn", "static", "assets",
     "recipes", "recipe", "recept", "recepti",  # blog/recipe pages
+    "brand", "brands", "manufacturer", "manufacturers",  # brand/manufacturer pages
 }
 
 # Path segments that signal a product or category page
@@ -74,12 +76,19 @@ _PRODUCT_GRID_SELECTORS = [
 
 
 def _normalize(url: str) -> str:
-    """Normalize a URL: remove fragment, query string, trailing slash, fix double slashes in path."""
+    """Normalize a URL: remove fragment, query string, trailing slash, fix double slashes in path.
+
+    Also canonicalizes PrestaShop category URLs by stripping filter path segments.
+    e.g. /43-nahrbtniki/s-2/na_zalogi-da → /43-nahrbtniki
+    """
     p = urlparse(url)
     path = p.path.rstrip("/")
-    # Collapse double slashes in path (e.g. //trgovina → /trgovina)
     while "//" in path:
         path = path.replace("//", "/")
+    # PrestaShop: first segment is {id}-{slug} — strip any trailing filter segments
+    m = re.match(r"^(/\d+-[^/]+)(/.*)?$", path)
+    if m:
+        path = m.group(1)
     return urlunparse((p.scheme, p.netloc, path, "", "", ""))
 
 
@@ -111,6 +120,10 @@ def _is_product_like(url: str) -> bool:
     if segment_set & _PRODUCT_SIGNALS:
         return True
 
+    # PrestaShop: first segment is {id}-{slug} (e.g. 43-nahrbtniki)
+    if re.match(r"^\d+-\S+", segments[0]):
+        return True
+
     # Deep paths (2+ segments) found on category pages are likely products
     if len(segments) >= 2:
         return True
@@ -120,8 +133,14 @@ def _is_product_like(url: str) -> bool:
 
 def _is_category_url(url: str) -> bool:
     """Return True if the URL looks like a category/listing page."""
-    segments = set(urlparse(url).path.lower().strip("/").split("/"))
-    return bool(segments & _CATEGORY_SIGNALS)
+    path = urlparse(url).path.lower()
+    segments = set(path.strip("/").split("/"))
+    if segments & _CATEGORY_SIGNALS:
+        return True
+    # PrestaShop: first path segment is {id}-{slug}, no .html extension (product pages end in .html)
+    if re.match(r"^/\d+-[^/]", path) and not path.endswith(".html"):
+        return True
+    return False
 
 
 def _links_from_grid_selectors(soup: BeautifulSoup, base: str) -> list[str]:
@@ -175,7 +194,6 @@ def _links_from_density(soup: BeautifulSoup, base: str) -> list[str]:
 
 def _find_pagination_links(soup: BeautifulSoup, url: str, base: str) -> list[str]:
     """Find ?page=N pagination links on a listing page."""
-    import re
     seen = set()
     pages = []
     for a in soup.find_all("a", href=True):

@@ -58,7 +58,7 @@ def run_site(
     all_urls = crawl(homepage)
     _SKIP_SLUGS = {
         "shop", "store", "trgovina", "boutique", "tienda", "negozio", "winkel",
-        "sale", "deals", "offers", "akcija", "aktualne-ugodnosti", "ugodnosti",
+        "sale", "deals", "offers", "akcija", "aktualne-ugodnosti", "ugodnosti", "brand", "brands",
         "promotions", "rabais", "offerte", "angebote",
         "gift-cards", "gift-vouchers", "darilni-boni", "boni", "vouchers",
         "uncategorized", "neuvrsceni", "neuvrsteno", "brez-kategorije",
